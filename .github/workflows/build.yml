@@ -1,101 +1,11 @@
-name: Florida
+name: Florida For Pixel 6a (ARM64 Only)
 
 on:
-  schedule:
-    - cron: "0 9/12 * * *"
   workflow_dispatch: 
-  push:
-    branches: ["main", "ci"]
-    paths:
-      - ".github/workflows/build.yml"
-      - "patches/**"
 
 jobs: 
-  check_version:
-    runs-on: ubuntu-22.04
-
-    outputs:
-      FRIDA_VERSION: ${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}
-      ALREADY_RELEASE: ${{ steps.checkReleaseVersion.outputs.ALREADY_RELEASE }}
-    steps:
-      - name: Pull Frida Latest Release
-        id: pullFridaLatestRelease
-        uses: actions/github-script@v3
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            core.setOutput('FRIDA_VERSION', '17.7.3');
-
-      - name: Split Repository Name
-        id: split_name
-        run: |
-          repo_name=${{ github.repository }}
-          IFS='/' read -ra repo_parts <<< "$repo_name"
-          echo "owner=${repo_parts[0]}" >> $GITHUB_OUTPUT
-          echo "repo=${repo_parts[1]}" >> $GITHUB_OUTPUT
-
-      - name: Check release version
-        id: checkReleaseVersion
-        uses: actions/github-script@v3
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            try {
-              const releaseVersion = '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}'
-              const releaseResponse = await github.repos.getReleaseByTag({
-                owner: '${{ steps.split_name.outputs.owner }}',
-                repo: '${{ steps.split_name.outputs.repo }}',
-                tag: releaseVersion
-              });
-              const {
-                data: { tag_name: ver }
-              } = releaseResponse;
-              if (ver == '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}'){
-                  if ( ${{ ( github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}){
-                    core.setOutput('ALREADY_RELEASE', '2');
-                  } else {
-                    core.setOutput('ALREADY_RELEASE', '1');
-                  }
-              }
-              else{
-                  core.setOutput('ALREADY_RELEASE', '0');
-              }
-            } catch (e) {
-              if(e.message == 'Not Found'){
-                core.setOutput('ALREADY_RELEASE', '0');
-              }
-              else{
-                core.setFailed(e.message);
-              }
-            }
-      
-      - name: Delete release
-        if: ${{ steps.checkReleaseVersion.outputs.ALREADY_RELEASE == '2' }}
-        uses: dev-drprasad/delete-tag-and-release@v1.0
-        with:
-          tag_name: ${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          delete_release: true
-
-  create_release:
-    needs: check_version
-    runs-on: ubuntu-22.04
-    if: needs.check_version.outputs.ALREADY_RELEASE != '1'
-
-    steps:
-      - uses: softprops/action-gh-release@v2.1.0
-        id: createRelease
-        name: Create Runner Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: "${{ needs.check_version.outputs.FRIDA_VERSION }}"
-          name: "${{ needs.check_version.outputs.FRIDA_VERSION }}"
-          prerelease: false
-
   android_build:
     runs-on: ubuntu-22.04
-    needs: [check_version, create_release]
 
     steps:
     - uses: actions/checkout@v3
@@ -129,7 +39,7 @@ jobs:
         sudo gem install fpm -v 1.11.0 --no-document
         python3 -m pip install lief graphlib
 
-    - name: build frida for Android
+    - name: build frida for Android ARM64
       shell: bash
       run: |
         git config --global user.name "GitHub Actions"
@@ -138,10 +48,8 @@ jobs:
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
         
-        # 1. 强行拉取 17.7.3 源码
+        # 强制拉取 17.7.3 并删除损坏的补丁
         git clone --recurse-submodules --branch 17.7.3 https://github.com/frida/frida
-        
-        # 2. 【暴力修复】在打补丁之前，直接删掉作者写崩了的第 9 号补丁！
         rm -f patches/frida-core/*memfd-name-jit-cache.patch
         
         cd frida
@@ -151,182 +59,27 @@ jobs:
           real=$(realpath $path)
           echo "Apply patches in $real to frida/subprojects/$name"
           cd subprojects/$name
-          
-          # 3. 增加容错机制，忽略烦人的空格错误
           git am --ignore-whitespace ../../../patches/$name/*.patch || true
-          
           cd ../..
         done
         cd ..
         
-        ARCHES="android-arm android-arm64 android-x86 android-x86_64"
-        for ARCH in $ARCHES
-        do
-          mkdir build-$ARCH
-          cd build-$ARCH
-          ../frida/configure --host=$ARCH
-          make
-          cd ..
-        done
-    
-    - name: Split Repository Name
-      id: split_name
-      run: |
-        repo_name=${{ github.repository }}
-        IFS='/' read -ra repo_parts <<< "$repo_name"
-        echo "owner=${repo_parts[0]}" >> $GITHUB_OUTPUT
-        echo "repo=${repo_parts[1]}" >> $GITHUB_OUTPUT
+        # 【核心修改】只编译 android-arm64
+        ARCH="android-arm64"
+        mkdir build-$ARCH
+        cd build-$ARCH
+        ../frida/configure --host=$ARCH
+        make
+        cd ..
 
-    - name: Check release version
-      id: checkReleaseVersion
-      uses: actions/github-script@v3
-      with:
-        github-token: ${{secrets.GITHUB_TOKEN}}
-        script: |
-          try {
-            const releaseVersion = '${{ needs.check_version.outputs.FRIDA_VERSION }}'
-            const releaseResponse = await github.repos.getReleaseByTag({
-              owner: '${{ steps.split_name.outputs.owner }}',
-              repo: '${{ steps.split_name.outputs.repo }}',
-              tag: releaseVersion
-            })
-            const {
-              data: { id: releaseId, html_url: htmlUrl, upload_url: uploadUrl }
-            } = releaseResponse;
-            core.setOutput('id', releaseId);
-            core.setOutput('html_url', htmlUrl);
-            core.setOutput('upload_url', uploadUrl);
-            core.setOutput('version', releaseVersion);
-          } catch (e) {
-            core.setFailed(e.message);
-          }
-
-    - name: package build result for Android
+    - name: package build result
       shell: bash
       run: |
-        
-        gzip build-android-arm/subprojects/frida-core/server/frida-server
+        # 仅打包 arm64 的 frida-server
         gzip build-android-arm64/subprojects/frida-core/server/frida-server
-        gzip build-android-x86/subprojects/frida-core/server/frida-server
-        gzip build-android-x86_64/subprojects/frida-core/server/frida-server
-        
-        gzip build-android-arm/subprojects/frida-core/inject/frida-inject
-        gzip build-android-arm64/subprojects/frida-core/inject/frida-inject
-        gzip build-android-x86/subprojects/frida-core/inject/frida-inject
-        gzip build-android-x86_64/subprojects/frida-core/inject/frida-inject
-        
-        gzip build-android-arm/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip build-android-x86/subprojects/frida-core/lib/gadget/frida-gadget.so
-        gzip build-android-x86_64/subprojects/frida-core/lib/gadget/frida-gadget.so
 
-        gzip build-android-arm/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
-        gzip build-android-arm64/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
-        gzip build-android-x86/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
-        gzip build-android-x86_64/subprojects/frida-gum/bindings/gumjs/libfrida-gumjs-1.0.a
-        
-
-    - name: Upload android arm frida-server for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm/subprojects/frida-core/server/frida-server.gz'
-        asset_name: 'florida-server-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm.gz'
-        asset_content_type: application/octet-stream
-
-    - name: Upload android arm64 frida-server for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm64/subprojects/frida-core/server/frida-server.gz'
-        asset_name: 'florida-server-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm64.gz'
-        asset_content_type: application/octet-stream
-
-    - name: Upload android x86 frida-server for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-x86/subprojects/frida-core/server/frida-server.gz'
-        asset_name: 'florida-server-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-x86.gz'
-        asset_content_type: application/octet-stream
-
-    - name: Upload android x86_64 frida-server for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-x86_64/subprojects/frida-core/server/frida-server.gz'
-        asset_name: 'florida-server-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-x86_64.gz'
-        asset_content_type: application/octet-stream
-        
-    - name: Upload android arm frida-inject for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm/subprojects/frida-core/inject/frida-inject.gz'
-        asset_name: 'florida-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm.gz'
-        asset_content_type: application/octet-stream
-        
-    - name: Upload android arm64 frida-inject for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm64/subprojects/frida-core/inject/frida-inject.gz'
-        asset_name: 'florida-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm64.gz'
-        asset_content_type: application/octet-stream
-        
-    - name: Upload android x86 frida-inject for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-x86/subprojects/frida-core/inject/frida-inject.gz'
-        asset_name: 'florida-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-x86.gz'
-        asset_content_type: application/octet-stream
-        
-    - name: Upload android x86_64 frida-inject for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-x86_64/subprojects/frida-core/inject/frida-inject.gz'
-        asset_name: 'florida-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm-x86_64.gz'
-        asset_content_type: application/octet-stream
-    
-    - name: Upload android arm frida-gadget for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm/subprojects/frida-core/lib/gadget/frida-gadget.so.gz'
-        asset_name: 'florida-gadget-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm.so.gz'
-        asset_content_type: application/octet-stream
-
-    - name: Upload android arm64 frida-gadget for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
-        asset_path: '${{ github.workspace }}/build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so.gz'
-        asset_name: 'florida-gadget-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm64.so.gz'
-        asset_content_type: application/octet-stream
-   
-    - name: Upload android x86 frida-gadget for Florida
-      uses: actions/upload-release-asset@v1.0.2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: florida-server-arm64.gz
+        path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
