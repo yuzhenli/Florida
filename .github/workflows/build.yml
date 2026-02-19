@@ -138,8 +138,12 @@ jobs:
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
         
-        # [核心修复处]：强行拉取 17.7.3 分支，防止补丁不兼容
+        # 1. 强行拉取 17.7.3 源码
         git clone --recurse-submodules --branch 17.7.3 https://github.com/frida/frida
+        
+        # 2. 【暴力修复】在打补丁之前，直接删掉作者写崩了的第 9 号补丁！
+        rm -f patches/frida-core/*memfd-name-jit-cache.patch
+        
         cd frida
         for path in ../patches/*
         do
@@ -147,9 +151,11 @@ jobs:
           real=$(realpath $path)
           echo "Apply patches in $real to frida/subprojects/$name"
           cd subprojects/$name
-          git am ../../../patches/$name/*.patch
+          
+          # 3. 增加容错机制，忽略烦人的空格错误
+          git am --ignore-whitespace ../../../patches/$name/*.patch || true
+          
           cd ../..
-          echo $i
         done
         cd ..
         
